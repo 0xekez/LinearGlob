@@ -1,0 +1,937 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="2000" height="742" onload="init(evt)" viewBox="0 0 2000 742" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="2000.0" height="742.0" fill="url(#background)"  />
+<text id="title" x="1000.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="725" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1890.00" y="24" >Search</text>
+<text id="matched" x="1890.00" y="725" > </text>
+<g id="frames">
+<g >
+<title>__GI___libc_malloc (2 samples, 1.02%)</title><rect x="1939.5" y="485" width="20.2" height="31.0" fill="rgb(210,50,53)" rx="2" ry="2" />
+<text  x="1942.49" y="503.5" ></text>
+</g>
+<g >
+<title>operator new (3 samples, 1.53%)</title><rect x="303.0" y="261" width="30.3" height="31.0" fill="rgb(253,23,41)" rx="2" ry="2" />
+<text  x="305.96" y="279.5" >op..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (4 samples, 2.04%)</title><rect x="1899.1" y="581" width="40.4" height="31.0" fill="rgb(207,158,12)" rx="2" ry="2" />
+<text  x="1902.08" y="599.5" >std..</text>
+</g>
+<g >
+<title>__memcmp_avx2_movbe (1 samples, 0.51%)</title><rect x="393.9" y="357" width="10.1" height="31.0" fill="rgb(209,39,1)" rx="2" ry="2" />
+<text  x="396.88" y="375.5" ></text>
+</g>
+<g >
+<title>__GI_fnmatch (28 samples, 14.29%)</title><rect x="676.7" y="549" width="282.9" height="31.0" fill="rgb(219,7,16)" rx="2" ry="2" />
+<text  x="679.73" y="567.5" >__GI_fnmatch</text>
+</g>
+<g >
+<title>std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (1 samples, 0.51%)</title><rect x="373.7" y="453" width="10.1" height="31.0" fill="rgb(228,8,52)" rx="2" ry="2" />
+<text  x="376.67" y="471.5" ></text>
+</g>
+<g >
+<title>std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (1 samples, 0.51%)</title><rect x="414.1" y="517" width="10.1" height="31.0" fill="rgb(226,128,26)" rx="2" ry="2" />
+<text  x="417.08" y="535.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (3 samples, 1.53%)</title><rect x="1899.1" y="549" width="30.3" height="31.0" fill="rgb(252,133,16)" rx="2" ry="2" />
+<text  x="1902.08" y="567.5" >__..</text>
+</g>
+<g >
+<title>_dl_relocate_object (3 samples, 1.53%)</title><rect x="90.8" y="485" width="30.3" height="31.0" fill="rgb(236,166,24)" rx="2" ry="2" />
+<text  x="93.82" y="503.5" >_d..</text>
+</g>
+<g >
+<title>__gnu_cxx::__aligned_membuf&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_addr (3 samples, 1.53%)</title><rect x="1020.2" y="453" width="30.3" height="31.0" fill="rgb(223,48,29)" rx="2" ry="2" />
+<text  x="1023.20" y="471.5" >__..</text>
+</g>
+<g >
+<title>_int_malloc (3 samples, 1.53%)</title><rect x="303.0" y="197" width="30.3" height="31.0" fill="rgb(240,25,17)" rx="2" ry="2" />
+<text  x="305.96" y="215.5" >_i..</text>
+</g>
+<g >
+<title>std::forward&lt;std::piecewise_construct_t const&amp;&gt; (1 samples, 0.51%)</title><rect x="333.3" y="389" width="10.1" height="31.0" fill="rgb(248,0,27)" rx="2" ry="2" />
+<text  x="336.27" y="407.5" ></text>
+</g>
+<g >
+<title>_dl_receive_error (1 samples, 0.51%)</title><rect x="80.7" y="485" width="10.1" height="31.0" fill="rgb(209,200,54)" rx="2" ry="2" />
+<text  x="83.71" y="503.5" ></text>
+</g>
+<g >
+<title>_int_free (2 samples, 1.02%)</title><rect x="131.2" y="613" width="20.2" height="31.0" fill="rgb(210,25,0)" rx="2" ry="2" />
+<text  x="134.22" y="631.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (2 samples, 1.02%)</title><rect x="1414.2" y="549" width="20.2" height="31.0" fill="rgb(224,95,10)" rx="2" ry="2" />
+<text  x="1417.18" y="567.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::destroy&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; (1 samples, 0.51%)</title><rect x="1323.3" y="165" width="10.1" height="31.0" fill="rgb(241,213,34)" rx="2" ry="2" />
+<text  x="1326.27" y="183.5" ></text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.51%)</title><rect x="1333.4" y="37" width="10.1" height="31.0" fill="rgb(208,173,36)" rx="2" ry="2" />
+<text  x="1336.37" y="55.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_construct_node&lt;std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (4 samples, 2.04%)</title><rect x="303.0" y="453" width="40.4" height="31.0" fill="rgb(215,128,54)" rx="2" ry="2" />
+<text  x="305.96" y="471.5" >std..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_key (1 samples, 0.51%)</title><rect x="404.0" y="485" width="10.1" height="31.0" fill="rgb(233,89,34)" rx="2" ry="2" />
+<text  x="406.98" y="503.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (4 samples, 2.04%)</title><rect x="303.0" y="421" width="40.4" height="31.0" fill="rgb(238,114,28)" rx="2" ry="2" />
+<text  x="305.96" y="439.5" >std..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::lower_bound (21 samples, 10.71%)</title><rect x="424.2" y="485" width="212.1" height="31.0" fill="rgb(253,104,11)" rx="2" ry="2" />
+<text  x="427.18" y="503.5" >std::_Rb_tree&lt;std::__cxx11:..</text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;::~pair (1 samples, 0.51%)</title><rect x="1333.4" y="69" width="10.1" height="31.0" fill="rgb(209,133,22)" rx="2" ry="2" />
+<text  x="1336.37" y="87.5" ></text>
+</g>
+<g >
+<title>operator new (1 samples, 0.51%)</title><rect x="1929.4" y="549" width="10.1" height="31.0" fill="rgb(209,11,48)" rx="2" ry="2" />
+<text  x="1932.39" y="567.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (4 samples, 2.04%)</title><rect x="1313.2" y="325" width="40.4" height="31.0" fill="rgb(242,211,32)" rx="2" ry="2" />
+<text  x="1316.16" y="343.5" >std..</text>
+</g>
+<g >
+<title>[unknown] (5 samples, 2.55%)</title><rect x="1353.6" y="581" width="50.5" height="31.0" fill="rgb(238,17,45)" rx="2" ry="2" />
+<text  x="1356.57" y="599.5" >[unkn..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (3 samples, 1.53%)</title><rect x="303.0" y="293" width="30.3" height="31.0" fill="rgb(248,96,27)" rx="2" ry="2" />
+<text  x="305.96" y="311.5" >st..</text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.51%)</title><rect x="1949.6" y="453" width="10.1" height="31.0" fill="rgb(209,219,5)" rx="2" ry="2" />
+<text  x="1952.59" y="471.5" ></text>
+</g>
+<g >
+<title>__strcat_sse2_unaligned (13 samples, 6.63%)</title><rect x="1434.4" y="581" width="131.3" height="31.0" fill="rgb(239,152,53)" rx="2" ry="2" />
+<text  x="1437.39" y="599.5" >__strcat_sse2_un..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_destroy_node (1 samples, 0.51%)</title><rect x="1323.3" y="229" width="10.1" height="31.0" fill="rgb(246,144,19)" rx="2" ry="2" />
+<text  x="1326.27" y="247.5" ></text>
+</g>
+<g >
+<title>do_lookup_x (2 samples, 1.02%)</title><rect x="100.9" y="421" width="20.2" height="31.0" fill="rgb(208,19,14)" rx="2" ry="2" />
+<text  x="103.92" y="439.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_left (1 samples, 0.51%)</title><rect x="505.0" y="421" width="10.1" height="31.0" fill="rgb(211,169,3)" rx="2" ry="2" />
+<text  x="508.00" y="439.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_value (1 samples, 0.51%)</title><rect x="383.8" y="421" width="10.1" height="31.0" fill="rgb(207,102,12)" rx="2" ry="2" />
+<text  x="386.78" y="439.5" ></text>
+</g>
+<g >
+<title>__random_r (4 samples, 2.04%)</title><rect x="1818.3" y="485" width="40.4" height="31.0" fill="rgb(246,60,20)" rx="2" ry="2" />
+<text  x="1821.27" y="503.5" >__r..</text>
+</g>
+<g >
+<title>__GI___libc_malloc (3 samples, 1.53%)</title><rect x="303.0" y="229" width="30.3" height="31.0" fill="rgb(234,186,51)" rx="2" ry="2" />
+<text  x="305.96" y="247.5" >__..</text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt; &gt;::allocate (1 samples, 0.51%)</title><rect x="343.4" y="421" width="10.1" height="31.0" fill="rgb(242,73,5)" rx="2" ry="2" />
+<text  x="346.37" y="439.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.51%)</title><rect x="1929.4" y="485" width="10.1" height="31.0" fill="rgb(215,78,53)" rx="2" ry="2" />
+<text  x="1932.39" y="503.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1 samples, 0.51%)</title><rect x="1404.1" y="581" width="10.1" height="31.0" fill="rgb(221,109,46)" rx="2" ry="2" />
+<text  x="1407.08" y="599.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (21 samples, 10.71%)</title><rect x="707.0" y="517" width="212.2" height="31.0" fill="rgb(251,224,18)" rx="2" ry="2" />
+<text  x="710.04" y="535.5" >__strlen_avx2</text>
+</g>
+<g >
+<title>std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_valptr (4 samples, 2.04%)</title><rect x="1010.1" y="517" width="40.4" height="31.0" fill="rgb(219,91,13)" rx="2" ry="2" />
+<text  x="1013.10" y="535.5" >std..</text>
+</g>
+<g >
+<title>_dl_lookup_symbol_x (3 samples, 1.53%)</title><rect x="90.8" y="453" width="30.3" height="31.0" fill="rgb(242,110,42)" rx="2" ry="2" />
+<text  x="93.82" y="471.5" >_d..</text>
+</g>
+<g >
+<title>version_check_doit (1 samples, 0.51%)</title><rect x="80.7" y="453" width="10.1" height="31.0" fill="rgb(208,139,52)" rx="2" ry="2" />
+<text  x="83.71" y="471.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (4 samples, 2.04%)</title><rect x="1313.2" y="357" width="40.4" height="31.0" fill="rgb(239,17,36)" rx="2" ry="2" />
+<text  x="1316.16" y="375.5" >std..</text>
+</g>
+<g >
+<title>std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (10 samples, 5.10%)</title><rect x="535.3" y="421" width="101.0" height="31.0" fill="rgb(225,24,49)" rx="2" ry="2" />
+<text  x="538.31" y="439.5" >std::less&lt;st..</text>
+</g>
+<g >
+<title>__random (3 samples, 1.53%)</title><rect x="1585.9" y="549" width="30.3" height="31.0" fill="rgb(205,61,21)" rx="2" ry="2" />
+<text  x="1588.92" y="567.5" >__..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (4 samples, 2.04%)</title><rect x="1313.2" y="453" width="40.4" height="31.0" fill="rgb(215,222,31)" rx="2" ry="2" />
+<text  x="1316.16" y="471.5" >std..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (4 samples, 2.04%)</title><rect x="1313.2" y="389" width="40.4" height="31.0" fill="rgb(241,156,38)" rx="2" ry="2" />
+<text  x="1316.16" y="407.5" >std..</text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt; &gt;::destroy&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; (1 samples, 0.51%)</title><rect x="1323.3" y="197" width="10.1" height="31.0" fill="rgb(232,96,42)" rx="2" ry="2" />
+<text  x="1326.27" y="215.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::allocate (1 samples, 0.51%)</title><rect x="343.4" y="389" width="10.1" height="31.0" fill="rgb(249,127,4)" rx="2" ry="2" />
+<text  x="346.37" y="407.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::compare (8 samples, 4.08%)</title><rect x="555.5" y="357" width="80.8" height="31.0" fill="rgb(243,229,5)" rx="2" ry="2" />
+<text  x="558.51" y="375.5" >std::__cx..</text>
+</g>
+<g >
+<title>__random (1 samples, 0.51%)</title><rect x="1353.6" y="549" width="10.1" height="31.0" fill="rgb(208,43,35)" rx="2" ry="2" />
+<text  x="1356.57" y="567.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree_iterator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::operator!= (4 samples, 2.04%)</title><rect x="959.6" y="549" width="40.4" height="31.0" fill="rgb(253,13,52)" rx="2" ry="2" />
+<text  x="962.59" y="567.5" >std..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_get_node (1 samples, 0.51%)</title><rect x="343.4" y="453" width="10.1" height="31.0" fill="rgb(240,109,48)" rx="2" ry="2" />
+<text  x="346.37" y="471.5" ></text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt; (3 samples, 1.53%)</title><rect x="303.0" y="357" width="30.3" height="31.0" fill="rgb(235,34,27)" rx="2" ry="2" />
+<text  x="305.96" y="375.5" >st..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_lower_bound (20 samples, 10.20%)</title><rect x="434.3" y="453" width="202.0" height="31.0" fill="rgb(238,195,1)" rx="2" ry="2" />
+<text  x="437.29" y="471.5" >std::_Rb_tree&lt;std::__cxx11..</text>
+</g>
+<g >
+<title>std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::operator (1 samples, 0.51%)</title><rect x="404.0" y="453" width="10.1" height="31.0" fill="rgb(247,63,30)" rx="2" ry="2" />
+<text  x="406.98" y="471.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (4 samples, 2.04%)</title><rect x="1313.2" y="485" width="40.4" height="31.0" fill="rgb(223,93,30)" rx="2" ry="2" />
+<text  x="1316.16" y="503.5" >std..</text>
+</g>
+<g >
+<title>rand (4 samples, 2.04%)</title><rect x="1363.7" y="549" width="40.4" height="31.0" fill="rgb(223,79,18)" rx="2" ry="2" />
+<text  x="1366.67" y="567.5" >rand</text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.51%)</title><rect x="343.4" y="325" width="10.1" height="31.0" fill="rgb(231,145,47)" rx="2" ry="2" />
+<text  x="346.37" y="343.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::~_Rb_tree (4 samples, 2.04%)</title><rect x="1313.2" y="517" width="40.4" height="31.0" fill="rgb(215,60,25)" rx="2" ry="2" />
+<text  x="1316.16" y="535.5" >std..</text>
+</g>
+<g >
+<title>std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_valptr (1 samples, 0.51%)</title><rect x="363.6" y="421" width="10.1" height="31.0" fill="rgb(237,114,26)" rx="2" ry="2" />
+<text  x="366.57" y="439.5" ></text>
+</g>
+<g >
+<title>LinearGlob&lt;int&gt;::getPattern (67 samples, 34.18%)</title><rect x="636.3" y="581" width="676.9" height="31.0" fill="rgb(241,101,50)" rx="2" ry="2" />
+<text  x="639.33" y="599.5" >LinearGlob&lt;int&gt;::getPattern</text>
+</g>
+<g >
+<title>std::operator&lt; &lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (1 samples, 0.51%)</title><rect x="414.1" y="485" width="10.1" height="31.0" fill="rgb(241,225,6)" rx="2" ry="2" />
+<text  x="417.08" y="503.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_value (4 samples, 2.04%)</title><rect x="444.4" y="389" width="40.4" height="31.0" fill="rgb(224,180,31)" rx="2" ry="2" />
+<text  x="447.39" y="407.5" >std..</text>
+</g>
+<g >
+<title>__random (12 samples, 6.12%)</title><rect x="1737.4" y="517" width="121.3" height="31.0" fill="rgb(207,163,15)" rx="2" ry="2" />
+<text  x="1740.45" y="535.5" >__random</text>
+</g>
+<g >
+<title>all (196 samples, 100%)</title><rect x="10.0" y="677" width="1980.0" height="31.0" fill="rgb(228,9,51)" rx="2" ry="2" />
+<text  x="13.00" y="695.5" ></text>
+</g>
+<g >
+<title>__random_r (1 samples, 0.51%)</title><rect x="1606.1" y="517" width="10.1" height="31.0" fill="rgb(253,121,30)" rx="2" ry="2" />
+<text  x="1609.12" y="535.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_destroy_node (1 samples, 0.51%)</title><rect x="1333.4" y="165" width="10.1" height="31.0" fill="rgb(237,58,54)" rx="2" ry="2" />
+<text  x="1336.37" y="183.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::compare (1 samples, 0.51%)</title><rect x="373.7" y="389" width="10.1" height="31.0" fill="rgb(232,224,7)" rx="2" ry="2" />
+<text  x="376.67" y="407.5" ></text>
+</g>
+<g >
+<title>LinearGlob&lt;int&gt;::~LinearGlob (4 samples, 2.04%)</title><rect x="1313.2" y="581" width="40.4" height="31.0" fill="rgb(224,199,7)" rx="2" ry="2" />
+<text  x="1316.16" y="599.5" >Lin..</text>
+</g>
+<g >
+<title>__memcmp_avx2_movbe (1 samples, 0.51%)</title><rect x="373.7" y="357" width="10.1" height="31.0" fill="rgb(245,202,18)" rx="2" ry="2" />
+<text  x="376.67" y="375.5" ></text>
+</g>
+<g >
+<title>random_word (25 samples, 12.76%)</title><rect x="1616.2" y="581" width="252.6" height="31.0" fill="rgb(210,140,5)" rx="2" ry="2" />
+<text  x="1619.22" y="599.5" >random_word</text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.51%)</title><rect x="343.4" y="293" width="10.1" height="31.0" fill="rgb(226,96,26)" rx="2" ry="2" />
+<text  x="346.37" y="311.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::destroy&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; (1 samples, 0.51%)</title><rect x="1333.4" y="101" width="10.1" height="31.0" fill="rgb(205,193,46)" rx="2" ry="2" />
+<text  x="1336.37" y="119.5" ></text>
+</g>
+<g >
+<title>__memcmp_avx2_movbe (5 samples, 2.55%)</title><rect x="575.7" y="325" width="50.5" height="31.0" fill="rgb(210,160,38)" rx="2" ry="2" />
+<text  x="578.71" y="343.5" >__mem..</text>
+</g>
+<g >
+<title>do_lookup_x (1 samples, 0.51%)</title><rect x="626.2" y="229" width="10.1" height="31.0" fill="rgb(210,89,8)" rx="2" ry="2" />
+<text  x="629.22" y="247.5" ></text>
+</g>
+<g >
+<title>std::operator&lt; &lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (1 samples, 0.51%)</title><rect x="393.9" y="421" width="10.1" height="31.0" fill="rgb(211,81,2)" rx="2" ry="2" />
+<text  x="396.88" y="439.5" ></text>
+</g>
+<g >
+<title>std::operator&lt; &lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (10 samples, 5.10%)</title><rect x="535.3" y="389" width="101.0" height="31.0" fill="rgb(252,33,4)" rx="2" ry="2" />
+<text  x="538.31" y="407.5" >std::operato..</text>
+</g>
+<g >
+<title>std::map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, int, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::operator[] (34 samples, 17.35%)</title><rect x="292.9" y="549" width="343.4" height="31.0" fill="rgb(235,72,53)" rx="2" ry="2" />
+<text  x="295.86" y="567.5" >std::map&lt;std::__cxx11::basic_string&lt;char, std:..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (1 samples, 0.51%)</title><rect x="1333.4" y="229" width="10.1" height="31.0" fill="rgb(209,137,23)" rx="2" ry="2" />
+<text  x="1336.37" y="247.5" ></text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;, 0ul&gt; (3 samples, 1.53%)</title><rect x="303.0" y="325" width="30.3" height="31.0" fill="rgb(241,10,45)" rx="2" ry="2" />
+<text  x="305.96" y="343.5" >st..</text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.51%)</title><rect x="1323.3" y="101" width="10.1" height="31.0" fill="rgb(213,213,21)" rx="2" ry="2" />
+<text  x="1326.27" y="119.5" ></text>
+</g>
+<g >
+<title>operator new (1 samples, 0.51%)</title><rect x="343.4" y="357" width="10.1" height="31.0" fill="rgb(245,94,19)" rx="2" ry="2" />
+<text  x="346.37" y="375.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt; &gt;::destroy&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; (1 samples, 0.51%)</title><rect x="1333.4" y="133" width="10.1" height="31.0" fill="rgb(232,86,53)" rx="2" ry="2" />
+<text  x="1336.37" y="151.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_assign (2 samples, 1.02%)</title><rect x="1939.5" y="549" width="20.2" height="31.0" fill="rgb(232,58,54)" rx="2" ry="2" />
+<text  x="1942.49" y="567.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_right (1 samples, 0.51%)</title><rect x="1343.5" y="229" width="10.1" height="31.0" fill="rgb(218,36,53)" rx="2" ry="2" />
+<text  x="1346.47" y="247.5" ></text>
+</g>
+<g >
+<title>__GI___tunables_init (1 samples, 0.51%)</title><rect x="70.6" y="517" width="10.1" height="31.0" fill="rgb(222,35,18)" rx="2" ry="2" />
+<text  x="73.61" y="535.5" ></text>
+</g>
+<g >
+<title>LinearGlob&lt;int&gt;::add (35 samples, 17.86%)</title><rect x="282.8" y="581" width="353.5" height="31.0" fill="rgb(237,151,3)" rx="2" ry="2" />
+<text  x="285.76" y="599.5" >LinearGlob&lt;int&gt;::add</text>
+</g>
+<g >
+<title>rand@plt (1 samples, 0.51%)</title><rect x="1858.7" y="549" width="10.1" height="31.0" fill="rgb(248,60,54)" rx="2" ry="2" />
+<text  x="1861.67" y="567.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_valptr (4 samples, 2.04%)</title><rect x="444.4" y="357" width="40.4" height="31.0" fill="rgb(223,72,6)" rx="2" ry="2" />
+<text  x="447.39" y="375.5" >std..</text>
+</g>
+<g >
+<title>_dl_runtime_resolve_xsavec (1 samples, 0.51%)</title><rect x="626.2" y="325" width="10.1" height="31.0" fill="rgb(248,129,24)" rx="2" ry="2" />
+<text  x="629.22" y="343.5" ></text>
+</g>
+<g >
+<title>std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;::tuple (1 samples, 0.51%)</title><rect x="121.1" y="581" width="10.1" height="31.0" fill="rgb(246,113,46)" rx="2" ry="2" />
+<text  x="124.12" y="599.5" ></text>
+</g>
+<g >
+<title>std::map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, int, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::~map (4 samples, 2.04%)</title><rect x="1313.2" y="549" width="40.4" height="31.0" fill="rgb(239,137,24)" rx="2" ry="2" />
+<text  x="1316.16" y="567.5" >std..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_create_node&lt;std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (6 samples, 3.06%)</title><rect x="292.9" y="485" width="60.6" height="31.0" fill="rgb(230,203,24)" rx="2" ry="2" />
+<text  x="295.86" y="503.5" >std::_..</text>
+</g>
+<g >
+<title>internal_fnmatch (4 samples, 2.04%)</title><rect x="919.2" y="517" width="40.4" height="31.0" fill="rgb(254,58,38)" rx="2" ry="2" />
+<text  x="922.18" y="535.5" >int..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (4 samples, 2.04%)</title><rect x="1313.2" y="421" width="40.4" height="31.0" fill="rgb(243,123,35)" rx="2" ry="2" />
+<text  x="1316.16" y="439.5" >std..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_key (1 samples, 0.51%)</title><rect x="383.8" y="453" width="10.1" height="31.0" fill="rgb(222,192,53)" rx="2" ry="2" />
+<text  x="386.78" y="471.5" ></text>
+</g>
+<g >
+<title>rand (1 samples, 0.51%)</title><rect x="1969.8" y="613" width="10.1" height="31.0" fill="rgb(219,83,9)" rx="2" ry="2" />
+<text  x="1972.80" y="631.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_emplace_hint_unique&lt;std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (12 samples, 6.12%)</title><rect x="292.9" y="517" width="121.2" height="31.0" fill="rgb(240,140,26)" rx="2" ry="2" />
+<text  x="295.86" y="535.5" >std::_Rb_tree&lt;s..</text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.51%)</title><rect x="1929.4" y="517" width="10.1" height="31.0" fill="rgb(221,93,5)" rx="2" ry="2" />
+<text  x="1932.39" y="535.5" ></text>
+</g>
+<g >
+<title>[unknown] (1 samples, 0.51%)</title><rect x="121.1" y="613" width="10.1" height="31.0" fill="rgb(245,101,36)" rx="2" ry="2" />
+<text  x="124.12" y="631.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::construct&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::piecewise_construct_t const&amp;, std::tuple&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const&amp;&gt;, std::tuple&lt;&gt; &gt; (3 samples, 1.53%)</title><rect x="303.0" y="389" width="30.3" height="31.0" fill="rgb(217,218,13)" rx="2" ry="2" />
+<text  x="305.96" y="407.5" >__..</text>
+</g>
+<g >
+<title>std::_Rb_tree_iterator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::operator* (5 samples, 2.55%)</title><rect x="1000.0" y="549" width="50.5" height="31.0" fill="rgb(251,172,40)" rx="2" ry="2" />
+<text  x="1003.00" y="567.5" >std::..</text>
+</g>
+<g >
+<title>std::operator&lt; &lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (1 samples, 0.51%)</title><rect x="373.7" y="421" width="10.1" height="31.0" fill="rgb(213,204,53)" rx="2" ry="2" />
+<text  x="376.67" y="439.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__aligned_membuf&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_ptr (1 samples, 0.51%)</title><rect x="383.8" y="389" width="10.1" height="31.0" fill="rgb(230,163,53)" rx="2" ry="2" />
+<text  x="386.78" y="407.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_right (1 samples, 0.51%)</title><rect x="515.1" y="421" width="10.1" height="31.0" fill="rgb(219,45,49)" rx="2" ry="2" />
+<text  x="518.10" y="439.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_valptr (1 samples, 0.51%)</title><rect x="1979.9" y="613" width="10.1" height="31.0" fill="rgb(209,105,4)" rx="2" ry="2" />
+<text  x="1982.90" y="631.5" ></text>
+</g>
+<g >
+<title>_dl_check_all_versions (1 samples, 0.51%)</title><rect x="80.7" y="421" width="10.1" height="31.0" fill="rgb(206,18,10)" rx="2" ry="2" />
+<text  x="83.71" y="439.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_insert_node (2 samples, 1.02%)</title><rect x="383.8" y="485" width="20.2" height="31.0" fill="rgb(213,118,48)" rx="2" ry="2" />
+<text  x="386.78" y="503.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::compare (1 samples, 0.51%)</title><rect x="393.9" y="389" width="10.1" height="31.0" fill="rgb(231,206,22)" rx="2" ry="2" />
+<text  x="396.88" y="407.5" ></text>
+</g>
+<g >
+<title>__GI___strdup (2 samples, 1.02%)</title><rect x="1414.2" y="581" width="20.2" height="31.0" fill="rgb(246,90,46)" rx="2" ry="2" />
+<text  x="1417.18" y="599.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_drop_node (1 samples, 0.51%)</title><rect x="1323.3" y="261" width="10.1" height="31.0" fill="rgb(250,199,12)" rx="2" ry="2" />
+<text  x="1326.27" y="279.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__aligned_membuf&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_ptr (1 samples, 0.51%)</title><rect x="474.7" y="325" width="10.1" height="31.0" fill="rgb(244,36,33)" rx="2" ry="2" />
+<text  x="477.69" y="343.5" ></text>
+</g>
+<g >
+<title>rand (5 samples, 2.55%)</title><rect x="1565.7" y="581" width="50.5" height="31.0" fill="rgb(254,195,5)" rx="2" ry="2" />
+<text  x="1568.71" y="599.5" >rand</text>
+</g>
+<g >
+<title>_dl_fixup (1 samples, 0.51%)</title><rect x="626.2" y="293" width="10.1" height="31.0" fill="rgb(222,98,21)" rx="2" ry="2" />
+<text  x="629.22" y="311.5" ></text>
+</g>
+<g >
+<title>dl_main (4 samples, 2.04%)</title><rect x="80.7" y="517" width="40.4" height="31.0" fill="rgb(232,165,5)" rx="2" ry="2" />
+<text  x="83.71" y="535.5" >dl_..</text>
+</g>
+<g >
+<title>std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (1 samples, 0.51%)</title><rect x="393.9" y="453" width="10.1" height="31.0" fill="rgb(246,229,39)" rx="2" ry="2" />
+<text  x="396.88" y="471.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_get_insert_hint_unique_pos (3 samples, 1.53%)</title><rect x="353.5" y="485" width="30.3" height="31.0" fill="rgb(245,186,0)" rx="2" ry="2" />
+<text  x="356.47" y="503.5" >st..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_value (1 samples, 0.51%)</title><rect x="525.2" y="421" width="10.1" height="31.0" fill="rgb(220,44,27)" rx="2" ry="2" />
+<text  x="528.20" y="439.5" ></text>
+</g>
+<g >
+<title>_dl_sysdep_start (5 samples, 2.55%)</title><rect x="70.6" y="549" width="50.5" height="31.0" fill="rgb(216,44,24)" rx="2" ry="2" />
+<text  x="73.61" y="567.5" >_dl_s..</text>
+</g>
+<g >
+<title>std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::operator (1 samples, 0.51%)</title><rect x="494.9" y="389" width="10.1" height="31.0" fill="rgb(225,136,38)" rx="2" ry="2" />
+<text  x="497.90" y="407.5" ></text>
+</g>
+<g >
+<title>benchmark (179 samples, 91.33%)</title><rect x="151.4" y="613" width="1808.3" height="31.0" fill="rgb(242,66,31)" rx="2" ry="2" />
+<text  x="154.43" y="631.5" >benchmark</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_key (1 samples, 0.51%)</title><rect x="363.6" y="453" width="10.1" height="31.0" fill="rgb(236,111,25)" rx="2" ry="2" />
+<text  x="366.57" y="471.5" ></text>
+</g>
+<g >
+<title>rand (12 samples, 6.12%)</title><rect x="1737.4" y="549" width="121.3" height="31.0" fill="rgb(250,8,1)" rx="2" ry="2" />
+<text  x="1740.45" y="567.5" >rand</text>
+</g>
+<g >
+<title>operator new (2 samples, 1.02%)</title><rect x="1939.5" y="517" width="20.2" height="31.0" fill="rgb(242,212,41)" rx="2" ry="2" />
+<text  x="1942.49" y="535.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree_iterator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::operator++ (22 samples, 11.22%)</title><rect x="1050.5" y="549" width="222.3" height="31.0" fill="rgb(242,69,12)" rx="2" ry="2" />
+<text  x="1053.51" y="567.5" >std::_Rb_tree_iterator&lt;std::p..</text>
+</g>
+<g >
+<title>std::_Rb_tree_iterator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::operator* (1 samples, 0.51%)</title><rect x="282.8" y="549" width="10.1" height="31.0" fill="rgb(239,187,8)" rx="2" ry="2" />
+<text  x="285.76" y="567.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (3 samples, 1.53%)</title><rect x="1868.8" y="517" width="30.3" height="31.0" fill="rgb(250,105,37)" rx="2" ry="2" />
+<text  x="1871.78" y="535.5" >__..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_S_key (7 samples, 3.57%)</title><rect x="434.3" y="421" width="70.7" height="31.0" fill="rgb(237,93,15)" rx="2" ry="2" />
+<text  x="437.29" y="439.5" >std::_R..</text>
+</g>
+<g >
+<title>_dl_lookup_symbol_x (1 samples, 0.51%)</title><rect x="626.2" y="261" width="10.1" height="31.0" fill="rgb(228,17,33)" rx="2" ry="2" />
+<text  x="629.22" y="279.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::c_str (4 samples, 2.04%)</title><rect x="1272.8" y="549" width="40.4" height="31.0" fill="rgb(210,216,53)" rx="2" ry="2" />
+<text  x="1275.76" y="567.5" >std..</text>
+</g>
+<g >
+<title>std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;::~pair (1 samples, 0.51%)</title><rect x="1323.3" y="133" width="10.1" height="31.0" fill="rgb(224,131,18)" rx="2" ry="2" />
+<text  x="1326.27" y="151.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree_node&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_valptr (1 samples, 0.51%)</title><rect x="484.8" y="389" width="10.1" height="31.0" fill="rgb(249,159,17)" rx="2" ry="2" />
+<text  x="487.80" y="407.5" ></text>
+</g>
+<g >
+<title>operator new (1 samples, 0.51%)</title><rect x="1959.7" y="613" width="10.1" height="31.0" fill="rgb(238,205,34)" rx="2" ry="2" />
+<text  x="1962.69" y="631.5" ></text>
+</g>
+<g >
+<title>_int_malloc (3 samples, 1.53%)</title><rect x="1868.8" y="485" width="30.3" height="31.0" fill="rgb(214,221,23)" rx="2" ry="2" />
+<text  x="1871.78" y="503.5" >_i..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::operator= (2 samples, 1.02%)</title><rect x="1939.5" y="581" width="20.2" height="31.0" fill="rgb(222,65,53)" rx="2" ry="2" />
+<text  x="1942.49" y="599.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__aligned_membuf&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_addr (1 samples, 0.51%)</title><rect x="474.7" y="293" width="10.1" height="31.0" fill="rgb(210,108,13)" rx="2" ry="2" />
+<text  x="477.69" y="311.5" ></text>
+</g>
+<g >
+<title>_dl_start (5 samples, 2.55%)</title><rect x="70.6" y="581" width="50.5" height="31.0" fill="rgb(213,36,6)" rx="2" ry="2" />
+<text  x="73.61" y="599.5" >_dl_s..</text>
+</g>
+<g >
+<title>.annobin_rtld.c (11 samples, 5.61%)</title><rect x="10.0" y="613" width="111.1" height="31.0" fill="rgb(244,51,30)" rx="2" ry="2" />
+<text  x="13.00" y="631.5" >.annobin_rtld.c</text>
+</g>
+<g >
+<title>operator new (3 samples, 1.53%)</title><rect x="1868.8" y="549" width="30.3" height="31.0" fill="rgb(217,38,29)" rx="2" ry="2" />
+<text  x="1871.78" y="567.5" >op..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (2 samples, 1.02%)</title><rect x="1333.4" y="261" width="20.2" height="31.0" fill="rgb(219,173,25)" rx="2" ry="2" />
+<text  x="1336.37" y="279.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_drop_node (1 samples, 0.51%)</title><rect x="1333.4" y="197" width="10.1" height="31.0" fill="rgb(237,125,20)" rx="2" ry="2" />
+<text  x="1336.37" y="215.5" ></text>
+</g>
+<g >
+<title>std::map&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, int, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::lower_bound (21 samples, 10.71%)</title><rect x="424.2" y="517" width="212.1" height="31.0" fill="rgb(214,94,47)" rx="2" ry="2" />
+<text  x="427.18" y="535.5" >std::map&lt;std::__cxx11::basi..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char const*&gt; (3 samples, 1.53%)</title><rect x="1868.8" y="581" width="30.3" height="31.0" fill="rgb(250,112,5)" rx="2" ry="2" />
+<text  x="1871.78" y="599.5" >st..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_erase (4 samples, 2.04%)</title><rect x="1313.2" y="293" width="40.4" height="31.0" fill="rgb(243,102,33)" rx="2" ry="2" />
+<text  x="1316.16" y="311.5" >std..</text>
+</g>
+<g >
+<title>bencher (196 samples, 100.00%)</title><rect x="10.0" y="645" width="1980.0" height="31.0" fill="rgb(243,59,13)" rx="2" ry="2" />
+<text  x="13.00" y="663.5" >bencher</text>
+</g>
+<g >
+<title>std::_Rb_tree_increment (21 samples, 10.71%)</title><rect x="1060.6" y="517" width="212.2" height="31.0" fill="rgb(216,79,38)" rx="2" ry="2" />
+<text  x="1063.61" y="535.5" >std::_Rb_tree_increment</text>
+</g>
+<g >
+<title>__gnu_cxx::__aligned_membuf&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;::_M_ptr (4 samples, 2.04%)</title><rect x="1010.1" y="485" width="40.4" height="31.0" fill="rgb(232,217,4)" rx="2" ry="2" />
+<text  x="1013.10" y="503.5" >__g..</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt;, std::_Select1st&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt;, std::less&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, int&gt; &gt; &gt;::_M_end (1 samples, 0.51%)</title><rect x="424.2" y="453" width="10.1" height="31.0" fill="rgb(231,86,34)" rx="2" ry="2" />
+<text  x="427.18" y="471.5" ></text>
+</g>
+</g>
+</svg>
